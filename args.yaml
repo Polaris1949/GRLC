@@ -1,6 +1,6 @@
 DEFAULT: &DEFAULT
-  black_list: [1,2,3]
-  num_gpus_total: 4
+  black_list: []
+  num_gpus_total: 1
   num_gpus_to_use: 1
   seed: 0
   verbose: 2
@@ -14,7 +14,6 @@ GRLC: &GRLC
 
 GRLC-Cora: &GRLC-Cora
   <<: *GRLC
-  black_list: [0,3,2]
   lr: 0.005
   out_heads: 1
   task_type: Node_Transductive
@@ -54,7 +53,6 @@ GRLC-CiteSeer-classification: &GRLC-CiteSeer-classification
 
 GRLC-PubMed: &GRLC-PubMed
   <<: *GRLC
-  black_list: [0, 2,3]
   lr: 0.01
   out_heads: 8
   task_type: Node_Transductive
@@ -79,7 +77,6 @@ GRLC-PubMed-classification:
 
 GRLC-WikiCS: &GRLC-WikiCS
   <<: *GRLC
-  black_list: [0,1,2]
   lr: 0.01
   out_heads: 1
   task_type: Node_Transductive
@@ -106,7 +103,6 @@ GRLC-WikiCS-classification:
 
 GRLC-Photo: &GRLC-Photo
   <<: *GRLC
-  black_list: [0, 3,1]
   lr: 0.01
   out_heads: 1
   task_type: Node_Transductive
@@ -133,7 +129,6 @@ GRLC-Photo-classification:
 
 GRLC-Crocodile: &GRLC-Crocodile
   <<: *GRLC
-  black_list: [2,0,3]
   lr: 0.01
   out_heads: 1
   task_type: Node_Transductive
@@ -159,7 +154,6 @@ GRLC-Crocodile-classification: &GRLC-Crocodile-classification
 
 GRLC-CoraFull: &GRLC-CoraFull
   <<: *GRLC
-  black_list: [0,1,2]
   lr: 0.01
   out_heads: 1
   task_type: Node_Transductive
@@ -186,7 +180,6 @@ GRLC-CoraFull-classification:
 
 GRLC-DBLP: &GRLC-DBLP
   <<: *GRLC
-  black_list: [1,2,3]
   lr: 0.01
   out_heads: 1
   task_type: Node_Transductive

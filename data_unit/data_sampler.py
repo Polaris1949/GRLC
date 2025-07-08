@@ -11,7 +11,7 @@ import torch
 import torch_geometric
 from torch_geometric.data import Data
 from torch_geometric.utils import degree, segregate_self_loops, negative_sampling
-from torch_geometric.data.sampler import NeighborSampler
+from torch_geometric.sampler import NeighborSampler
 import torch.multiprocessing as mp
 import numpy as np
 
