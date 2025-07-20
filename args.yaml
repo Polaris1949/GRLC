@@ -12,6 +12,27 @@ GRLC: &GRLC
   model_name: GRLC
   <<: *DEFAULT
 
+GRLC-Argoverse2: &GRLC-Argoverse2
+  <<: *GRLC
+  lr: 0.005
+  out_heads: 1
+  task_type: Node_Transductive
+  val_interval: 1
+
+GRLC-Argoverse2-classification: &GRLC-Argoverse2-classification
+  <<: *GRLC-Argoverse2
+  epochs: 500
+  dim: 256
+  dim_x: 2
+  w_loss1: 2.0
+  w_loss2: 0.001
+  margin1: 0.8
+  margin2: 0.2
+  NN: 10
+  num1: 100
+  wd: 0.01
+  dropout: 0.2
+
 GRLC-Cora: &GRLC-Cora
   <<: *GRLC
   lr: 0.005

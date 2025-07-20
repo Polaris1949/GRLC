@@ -540,6 +540,10 @@ def get_dataset_class_name(dataset_name: str) -> str:
 
 
 def get_dataset_class(dataset_class: str) -> Callable[..., InMemoryDataset]:
+    if dataset_class == "Yamai":
+        from data_unit.data_av2 import MikuDataset
+        return MikuDataset
+
     assert dataset_class in (pyg.datasets.__all__ +
                              [
                                  "ENSPlanetoid", "LinkPlanetoid", "ADPlanetoid", "FullPlanetoid", "HomophilySynthetic",
@@ -597,7 +601,18 @@ def get_dataset_or_loader(dataset_class: str, dataset_name: str or None, root: s
         root = os.path.join(root, "synthetic")
     dataset_cls = get_dataset_class(dataset_class)
 
-    if dataset_class in ["TUDataset"]:  # Graph
+    if dataset_class == "Yamai":  # Custom
+        from data_unit.data_av2 import MikuDataModule, YamaiDataModule
+        root = os.path.join(root, "data_av2")
+        if not os.path.exists(root):
+            raise NotADirectoryError(root)
+        datamodule_miku = MikuDataModule(root=root, train_batch_size=1, val_batch_size=1, test_batch_size=1)
+        datamodule_miku.setup()
+        datamodule = YamaiDataModule(root=root, train_batch_size=1, val_batch_size=1, test_batch_size=1)
+        datamodule.setup()
+        return datamodule.train_dataloader(), datamodule.val_dataloader(), datamodule.test_dataloader()
+
+    elif dataset_class in ["TUDataset"]:  # Graph
         dataset = dataset_cls(root=root, **kwargs).shuffle()
         n_samples = len(dataset)
         train_samples = int(n_samples * train_val_test[0])
