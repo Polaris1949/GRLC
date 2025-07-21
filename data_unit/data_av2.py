@@ -661,7 +661,7 @@ class YamaiGraph:
         return cls(x=data.x, edge_index=data.edge_index)
 
     @classmethod
-    def from_batch(cls, data: dict[str, Any]) -> "YamaiGraph":
+    def from_batch(cls, data: Dict[str, Any]) -> "YamaiGraph":
         return cls(x=data['x'][0], edge_index=data['edge_index'][0])
 
     @property
@@ -684,10 +684,10 @@ class Yamai:
     graphs: List[YamaiGraph]
 
     @classmethod
-    def from_batch(cls, data: dict[str, Any]) -> "Yamai":
+    def from_batch(cls, data: Dict[str, Any]) -> "Yamai":
         return Yamai(graphs=[YamaiGraph.from_batch(i) for i in data['graphs']])
 
-    def dict(self) -> dict[str, Any]:
+    def dict(self) -> Dict[str, Any]:
         return asdict(self)
 
 @dataclass
@@ -818,11 +818,6 @@ class MikuDataset(ArgoverseV2Dataset):
             processed_dir = os.path.join(root, split, "yamai")
         super().__init__(root, split, raw_dir, processed_dir, transform, dim,
                          num_historical_steps, num_future_steps, predict_unseen_agents, vector_repr)
-        self._num_samples = {
-            'train': 9,
-            'val': 9,
-            'test': 9,
-        }[split]
 
     def process(self) -> None:
         for raw_file_name in tqdm(self.raw_file_names):               # tqdm是一个进度条库，用于在控制台显示进度

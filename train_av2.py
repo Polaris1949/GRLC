@@ -103,12 +103,12 @@ def run_GCN_yamai(args, gpu_id=None, exp_id=None):
     my_margin_2 = my_margin + args.margin2
     margin_loss = torch.nn.MarginRankingLoss(margin=my_margin, reduce=False)
     num_neg = 10  # TODO
-    print(num_neg)
+    #print(num_neg)
     #print(f'{args.w_loss1=}, {args.w_loss2=}')
 
     for current_iter, epoch in enumerate(tqdm(range(args.epochs))):
         # print(f"!0, {epoch=}")
-        if epoch % 50 == 0:
+        if epoch % 100 == 0:
             torch.save(model, f"{CKPT_PATH}/{exp_id}/grlc_{epoch}.pth")
             logfile.flush()
         for data_idx, data in enumerate(train_dataloader):
@@ -195,12 +195,12 @@ def run_GCN_yamai(args, gpu_id=None, exp_id=None):
                     mask_margin_N += torch.max((s_n - s_p.detach() - my_margin_2), lbl_z).sum()
                     i += 1
                 mask_margin_N = mask_margin_N / num_neg
-                string_1 = " loss_1: {:.3f}||loss_2: {:.3f}||".format(loss_mar.item(), mask_margin_N.item())
                 loss = loss_mar * args.w_loss1 + mask_margin_N * args.w_loss2 / nb_nodes
                 loss.backward()
                 optimiser.step()
-                tqdm.write(string_1)  # TODO
-                logfile.write(string_1+'\n')
+        string_1 = f"Epoch {epoch}, Loss {loss.item():.3f}, Loss 1: {loss_mar.item():.3f}, Loss 2: {mask_margin_N.item():.3f}"
+        tqdm.write(string_1)  # TODO
+        logfile.write(string_1+'\n')
     torch.save(model, f"{CKPT_PATH}/{exp_id}/grlc_{args.epochs}.pth")
     logfile.close()
 
