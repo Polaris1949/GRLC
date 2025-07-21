@@ -23,9 +23,12 @@ from torch.utils.data import DataLoader as EasyDataLoader
 from data_unit.data_av2 import Yamai, YamaiGraph
 from torch_geometric.data import Data as TGData
 
+CKPT_PATH = "runs"
 GRLC_DEVICE = 'cuda'
-GRLC_NUM_NODES = 135
-GRLC_NUM_FEATURES = 4
+MAX_NUM_AGENTS = 135
+TIME_SPAN = 10
+GRLC_NUM_NODES = MAX_NUM_AGENTS * TIME_SPAN
+GRLC_NUM_FEATURES = 4 + 3 * GRLC_NUM_NODES
 
 def get_dataset_yamai(args, dataset_kwargs):
     train_d, val_d, test_d = get_dataset_or_loader(
@@ -36,17 +39,18 @@ def get_dataset_yamai(args, dataset_kwargs):
     return train_d
 
 def get_data_yamai(graph: YamaiGraph):
-    x=F.pad(graph.x, (0, 0, 0, GRLC_NUM_NODES-graph.x.size(0))).float().to(GRLC_DEVICE)
+    num_pad_nodes = GRLC_NUM_NODES - graph.num_nodes
+    x = F.pad(graph.x, (0, 3 * num_pad_nodes, 0, num_pad_nodes)).float().to(GRLC_DEVICE)
     #print(f'{x.shape=}')
     train_d = TGData(x=x, edge_index=graph.edge_index)
     eps = 2.2204e-16
     norm = train_d.x.norm(p=1, dim=1, keepdim=True).clamp(min=0.) + eps
     train_d.x = train_d.x.div(norm.expand_as(train_d.x))
 
-    i = train_d.edge_index.long()
-    v = torch.FloatTensor(torch.ones([train_d.num_edges]))
+    i = train_d.edge_index.long().to(GRLC_DEVICE)
+    v = torch.ones([train_d.num_edges]).float().to(GRLC_DEVICE)
 
-    A_sp = torch.sparse.FloatTensor(i, v, torch.Size([train_d.num_nodes, train_d.num_nodes]))
+    A_sp = torch.sparse_coo_tensor(i, v, torch.Size([train_d.num_nodes, train_d.num_nodes]))
     A = A_sp.to_dense()
     I = torch.eye(A.shape[1]).to(A.device)
     A_I = A + I
@@ -71,14 +75,10 @@ def check_nan(tensor, message="Tensor contains NaN values"):
     return has_nan
 
 
-def run_GCN_yamai(args, gpu_id=None, exp_name=None, number=0):
+def run_GCN_yamai(args, gpu_id=None, exp_id=None):
     random.seed(args.seed)
     torch.cuda.manual_seed(args.seed)
     np.random.seed(args.seed)
-    writename = "-" + exp_name[4:] + "_" + str(number)
-    logname = os.path.join(exp_name, str(number) + "_" + str(args.seed) + ".txt")
-    logfile = open(logname, 'a')
-    writer = SummaryWriter(comment=writename)
     final_acc = 0
     best_acc = 0
     torch.backends.cudnn.deterministic = True
@@ -88,6 +88,7 @@ def run_GCN_yamai(args, gpu_id=None, exp_name=None, number=0):
     dataset_kwargs = {}
 
     train_dataloader: EasyDataLoader[Yamai] = get_dataset_yamai(args, dataset_kwargs)
+    logfile = open(f"{CKPT_PATH}/{exp_id}/train.log", "w", encoding="utf-8", newline="\n")
 
     useA = True  # TODO
     # TODO: nb_feature=4 or 128?
@@ -101,17 +102,23 @@ def run_GCN_yamai(args, gpu_id=None, exp_name=None, number=0):
     my_margin = args.margin1
     my_margin_2 = my_margin + args.margin2
     margin_loss = torch.nn.MarginRankingLoss(margin=my_margin, reduce=False)
-    num_neg = args.NN
+    num_neg = 10  # TODO
     print(num_neg)
-    print(f'{args.w_loss1=}, {args.w_loss2=}')
+    #print(f'{args.w_loss1=}, {args.w_loss2=}')
 
-    for current_iter, epoch in enumerate(tqdm(range(args.start_epoch, args.start_epoch + args.epochs + 1))):
+    for current_iter, epoch in enumerate(tqdm(range(args.epochs))):
         # print(f"!0, {epoch=}")
+        if epoch % 50 == 0:
+            torch.save(model, f"{CKPT_PATH}/{exp_id}/grlc_{epoch}.pth")
+            logfile.flush()
         for data_idx, data in enumerate(train_dataloader):
             # TODO: Multibatch
             yamai = Yamai.from_batch(data)
             # print(f"!1, {yamai}")
-            for graph_idx, graph in enumerate(yamai.a2a_graphs):
+            for graph_idx, graph in enumerate(yamai.graphs):
+                #if graph_idx >= 2:
+                #    exit()  # TODO
+                #print()
                 train_d, adj_list, x_list = get_data_yamai(graph)
                 
                 A_I = adj_list[0]
@@ -135,20 +142,16 @@ def run_GCN_yamai(args, gpu_id=None, exp_name=None, number=0):
 
                 model.train()
                 optimiser.zero_grad()
-                idx = np.random.permutation(nb_nodes)
                 feature_X = x_list[0].to(running_device)
                 lbl_z = torch.tensor([0.]).to(running_device)
                 feature_a = feature_X
                 feature_p = feature_X
                 feature_n = []
-                idx_list = []
-                # idx_lable = []
                 for i in range(num_neg):
                     idx_0 = np.random.permutation(nb_nodes)
-                    idx_list.append(idx_0)
-                    # idx_lable.append(lable[idx_0])
                     feature_temp = feature_X[idx_0]
                     feature_n.append(feature_temp)
+                #print(f'{feature_n=}')
                 h_a, h_p, h_n_lsit, h_a_0, h_p_0, h_n_0_list = model(feature_a, feature_p, feature_n, A_I_nomal, I=I_input)
                 check_nan(h_a, 'h_a nan')
                 check_nan(h_p, 'h_p nan')
@@ -159,14 +162,25 @@ def run_GCN_yamai(args, gpu_id=None, exp_name=None, number=0):
                     cos_0 = F.pairwise_distance(h_a_0, h_n_0)
                     cos_0_list.append(cos_0)
                 cos_0_stack = torch.stack(cos_0_list).detach()
+                #print(f'{cos_0_stack=}')
                 check_nan(cos_0_stack, 'cos_0_stack nan')
                 cos_0_min = cos_0_stack.min(dim=0)[0]
                 cos_0_max = cos_0_stack.max(dim=0)[0]
-                gap = cos_0_max - cos_0_min
+                #print(f'{cos_0_min=}, {cos_0_max=}')
+                gap = cos_0_max - cos_0_min  # FIXME: This contains zero.
+                #print(f'{gap=}')
                 weight_list = []
                 for i in range(cos_0_stack.size()[0]):
-                    weight_list.append((cos_0_stack[i] - cos_0_min) / gap)
-                check_nan(torch.stack(weight_list), 'weight_list nan')
+                    weight = (cos_0_stack[i] - cos_0_min) / gap
+                    if torch.isnan(weight).any():
+                        # FIXME: Every weight contains NaN.
+                        #print('!!!', i, cos_0_stack[i], cos_0_min, gap)
+                        weight = torch.nan_to_num(weight, nan=0.0)
+                        #print('@@@', torch.isnan(weight).any())
+                    weight_list.append(weight)
+                weight_list_stk = torch.stack(weight_list)
+                #print(f'{weight_list_stk=}')
+                check_nan(weight_list_stk, 'weight_list_stk nan')
                 s_n_list = []
                 s_n_cosin_list = []
                 for h_n in h_n_lsit:
@@ -186,7 +200,9 @@ def run_GCN_yamai(args, gpu_id=None, exp_name=None, number=0):
                 loss.backward()
                 optimiser.step()
                 tqdm.write(string_1)  # TODO
-
+                logfile.write(string_1+'\n')
+    torch.save(model, f"{CKPT_PATH}/{exp_id}/grlc_{args.epochs}.pth")
+    logfile.close()
 
 if __name__ == '__main__':
     num_total_runs = 10
@@ -197,16 +213,21 @@ if __name__ == '__main__':
         custom_key="classification",
     )
     pprint_args(main_args)
-    filePath = "log"
+    
+    if not os.path.exists(CKPT_PATH):
+        os.makedirs(CKPT_PATH)
+
+    filePath = CKPT_PATH
     exp_ID = 0
     for filename in os.listdir(filePath):
         file_info = filename.split("_")
         file_dataname = file_info[0]
         if file_dataname == main_args.dataset_name:
             exp_ID = max(int(file_info[1]), exp_ID)
-    exp_name = main_args.dataset_name + "_" + str(exp_ID + 1)
-    exp_name = os.path.join(filePath, exp_name)
-    os.makedirs(exp_name)
+    exp_dir = os.path.join(CKPT_PATH, str(exp_ID))
+    if not os.path.exists(exp_dir):
+        os.makedirs(exp_dir)
+
     if len(main_args.black_list) == main_args.num_gpus_total:
         alloc_gpu = [None]
         cprint("Use CPU", "yellow")
@@ -219,4 +240,4 @@ if __name__ == '__main__':
                                                if g not in main_args.black_list], 1))]
         cprint("Use GPU the ID of which is {}".format(alloc_gpu), "yellow")
 
-    run_GCN_yamai(main_args, gpu_id=alloc_gpu[0], exp_name=exp_name, number=0)
+    run_GCN_yamai(main_args, gpu_id=alloc_gpu[0], exp_id=exp_ID)

@@ -642,10 +642,14 @@ from torch_geometric.data import Data
 from torch_geometric.utils import subgraph
 from utils import angle_between_2d_vectors
 
+NUM_MAX_AGENTS = 135
 NUM_HISTORICAL_STEPS = 50
+TIME_SPAN = 10
 INPUT_DIM = 2
 HIDDEN_DIM = 128
 A2A_RADIUS = 50
+NUM_NODES = NUM_MAX_AGENTS * TIME_SPAN
+NODE_FULL_GRAPH = torch.tensor([(i, j) for i in range(NUM_NODES) for j in range(NUM_NODES)]).transpose(0, 1)
 
 @dataclass
 class YamaiGraph:
@@ -660,16 +664,28 @@ class YamaiGraph:
     def from_batch(cls, data: dict[str, Any]) -> "YamaiGraph":
         return cls(x=data['x'][0], edge_index=data['edge_index'][0])
 
+    @property
+    def num_nodes(self) -> int:
+        return self.x.shape[0]
+
+    @property
+    def num_features(self) -> int:
+        return self.x.shape[1]
+
+    @property
+    def num_edges(self) -> int:
+        return self.edge_index.shape[1]
+
     def __repr__(self) -> str:
         return f"YamaiGraph(x={self.x.shape}, edge_index={self.edge_index.shape})"
 
 @dataclass
 class Yamai:
-    a2a_graphs: List[YamaiGraph]
+    graphs: List[YamaiGraph]
 
     @classmethod
     def from_batch(cls, data: dict[str, Any]) -> "Yamai":
-        return Yamai(a2a_graphs=[YamaiGraph.from_batch(i) for i in data['a2a_graphs']])
+        return Yamai(graphs=[YamaiGraph.from_batch(i) for i in data['graphs']])
 
     def dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -714,108 +730,46 @@ class MikuAgent:
             f"position={self.position.shape}, heading={self.heading.shape}, velocity={self.velocity.shape})"
         )
 
-    def compute_influence(self) -> torch.Tensor:
-        # Graph arguments
-        graph_x = torch.zeros()
-
-        # 识别所有车辆（除目标车辆外）
-        num_nodes = self.num_nodes
-        target_id = num_all_vehicles = num_nodes - 1
-        all_vehicles = range(num_all_vehicles)
-
-        # 初始化影响分数和计数器
-        influence = torch.zeros(num_all_vehicles)
-        count = torch.zeros(num_all_vehicles)
-
-        # 权重系数（可调整）
-        a = 1.0  # 距离权重
-        b = 1.0  # 朝向权重
-        c = 1.0  # 速度相似度权重
-
-        T = self.num_steps
-        dist = nn.PairwiseDistance(p=2)
-        EPS = 1e-6
-        PI = math.pi
-        PI_MUL_2 = PI * 2
-
-        for t in range(T):
-            if not self.exists(target_id, t):
-                continue  # 目标车辆在该时间点不存在，跳过
-
-            # 获取目标车辆的状态
-            pos_t, theta_t, vel_t = self.stat(target_id, t)
-
-            for i in all_vehicles:
-                if not self.exists(i, t):
-                    continue  # 车辆i在该时间点不存在，跳过
-
-                # 获取车辆i的状态
-                pos_i, theta_i, vel_i = self.stat(i, t)
-
-                # 计算距离
-                d_i = torch.clamp(dist(pos_t, pos_i), min=EPS)  # 避免除零
-
-                # 计算朝向差异（最小角度差）
-                delta_theta = torch.minimum(torch.abs(theta_i - theta_t), PI_MUL_2 - torch.abs(theta_i - theta_t))
-
-                # 计算速度向量余弦相似度
-                sim_v = torch.cosine_similarity(vel_t, vel_i, dim=0)
-
-                # 计算当前时间点的影响分数
-                I_i_t = a / d_i + b * (1 - delta_theta / PI) + c * sim_v
-
-                # 累加影响分数和计数
-                influence[i] += I_i_t.squeeze()
-                count[i] += 1
-
-        # 计算平均影响分数
-        for i in all_vehicles:
-            if count[i] > 0:
-                influence[i] /= count[i]
-            #else:
-            #    influence[i] = 0  # 如果车辆从未出现，影响分数为0
-
-        return influence
-
     def to_graphs(self) -> List[YamaiGraph]:
-        mask = self.valid_mask[:, :NUM_HISTORICAL_STEPS].contiguous()    # 从数据中提取智能体的有效性掩码，并确保它只包含历史步骤的数量。contiguous() 方法用于确保张量在内存中是连续的
-        pos_a = self.position[:, :NUM_HISTORICAL_STEPS, :INPUT_DIM].contiguous()        # 提取智能体的位置信息
+        mask = self.valid_mask[:, :NUM_HISTORICAL_STEPS].contiguous()  # [A, T]
+        pos_a = self.position[:, :NUM_HISTORICAL_STEPS, :INPUT_DIM].contiguous()  # [A, T, 2]
         motion_vector_a = torch.cat([pos_a.new_zeros(self.num_nodes, 1, INPUT_DIM),
-                                     pos_a[:, 1:] - pos_a[:, :-1]], dim=1)     # 计算智能体的运动向量
-        head_a = self.heading[:, :NUM_HISTORICAL_STEPS].contiguous()            # 提取智能体的朝向信息
-        head_vector_a = torch.stack([head_a.cos(), head_a.sin()], dim=-1)           # 将智能体的朝向转换为向量表示
+                                     pos_a[:, 1:] - pos_a[:, :-1]], dim=1)  # [A, T, 2]
+        head_a = self.heading[:, :NUM_HISTORICAL_STEPS].contiguous()  # [A, T]
+        head_vector_a = torch.stack([head_a.cos(), head_a.sin()], dim=-1)  # [A, T, 2]
 
-        vel = self.velocity[:, :NUM_HISTORICAL_STEPS, :INPUT_DIM].contiguous()  # 从数据中提取智能体的速度信息
-        
-        x_a = torch.stack(               # 多个计算得到的特征向量堆叠形成一个新的特征向量
+        vel = self.velocity[:, :NUM_HISTORICAL_STEPS, :INPUT_DIM].contiguous()  # [A, T, 2]
+
+        x_a = torch.stack(  # [A, T, 4]
             [torch.norm(motion_vector_a[:, :, :2], p=2, dim=-1),     # 表示智能体在两个连续时间步之间的移动距离
                 angle_between_2d_vectors(ctr_vector=head_vector_a, nbr_vector=motion_vector_a[:, :, :2]),   # 计算智能体的运动向量和代理朝向向量之间的夹角
                 torch.norm(vel[:, :, :2], p=2, dim=-1),        # 表示智能体在两个连续时间步之间的平均速度
                 angle_between_2d_vectors(ctr_vector=head_vector_a, nbr_vector=vel[:, :, :2])], dim=-1) # 计算智能体速度向量和代理朝向向量之间的夹角
 
-        # view()方法用于重新塑形张量的形状而不改变其数据
-        # x_a = self.x_a_emb(continuous_inputs=x_a.view(-1, x_a.size(-1)), categorical_embs=categorical_embs) # 将计算得到的特征向量x_a通过Fourier嵌入层进行嵌入
-        # x_a = x_a.view(-1, NUM_HISTORICAL_STEPS, HIDDEN_DIM).transpose(0, 1)       # 嵌入后的特征向量重新塑形，以匹配历史步骤的数量和隐藏层的维度
-        # DEBUG: self.valid_mask.shape=torch.Size([81, 110]), x_a.shape=torch.Size([81, 50, 4])
-        x_a = x_a.transpose(0, 1)
+        num_nodes = self.num_nodes
+        num_nodes_t = num_nodes * TIME_SPAN
+        node_full_graph = torch.tensor([(i, j) for i in range(num_nodes_t) for j in range(num_nodes_t)]).transpose(0, 1)
+        yamai_graphs: List[YamaiGraph] = []
 
-        o = []
-        for t in range(NUM_HISTORICAL_STEPS):
-            pos_s = pos_a.transpose(0, 1)[t]   # [A,D] 首先将智能体的位置张量pos_a进行转置，使得历史步骤成为第一个维度，然后重塑为一维索引，每个代理一个位置向量
-            # head_s = head_a.transpose(0, 1).reshape(-1)           # 将智能体的朝向角度张量head_a进行转置并重塑，使得历史步骤成为第一个维度
-            # head_vector_s = head_vector_a.transpose(0, 1).reshape(-1, 2)   # 将智能体的朝向向量张量head_vector_a进行转置并重塑，使得历史步骤成为第一个维度，每个代理一个二维朝向向量
-            mask_s = mask.transpose(0, 1)[t]        # 将有效掩码进行转置并重塑，使得历史步骤成为第一个维度
+        for time_beg in range(0, NUM_HISTORICAL_STEPS, TIME_SPAN):
+            time_end = time_beg + TIME_SPAN
+            x_a_t = x_a[:, time_beg:time_end, :].reshape(num_nodes_t, 4)
+            pos_a_t = pos_a[:, time_beg:time_end, :].reshape(num_nodes_t, 2)
+            head_a_t = head_a[:, time_beg:time_end].reshape(num_nodes_t)
+            head_vector_a_t = head_vector_a[:, time_beg:time_end, :].reshape(num_nodes_t, 2)
+            rel_pos_a2a = pos_a_t[node_full_graph[0]] - pos_a_t[node_full_graph[1]]
+            rel_head_a2a = wrap_angle(head_a_t[node_full_graph[0]] - head_a_t[node_full_graph[1]])
+            r_a2a = torch.stack(
+                [torch.norm(rel_pos_a2a, p=2, dim=-1),
+                angle_between_2d_vectors(ctr_vector=head_vector_a_t[node_full_graph[1]], nbr_vector=rel_pos_a2a),
+                rel_head_a2a], dim=-1).reshape(num_nodes_t, num_nodes_t * 3)
+            # node_full_graph.shape=torch.Size([2, 656100]), x_a_t.shape=torch.Size([810, 4]), r_a2a.shape=torch.Size([810, 2430])
+            # print(f'{node_full_graph.shape=}, {x_a_t.shape=}, {r_a2a.shape=}')
+            x_yamai = torch.cat([x_a_t, r_a2a], dim=1)
+            edge_index_a2a = radius_graph(x=pos_a_t, r=A2A_RADIUS, loop=False, max_num_neighbors=300)
+            yamai_graphs.append(YamaiGraph(x=x_yamai, edge_index=edge_index_a2a))
 
-            # batch_s = torch.arange(NUM_HISTORICAL_STEPS,         # 使用torch.arange生成一个从0到self.num_historical_steps - 1的序列
-            #                         device=pos_a.device).repeat_interleave(self.num_nodes)
-
-            edge_index_a2a = radius_graph(x=pos_s[:, :2], r=A2A_RADIUS, loop=False, # 使用radius函数根据位置和半径self.pl2a_radius来构建智能体和智能体之间的边
-                                        max_num_neighbors=300)                                        # loop=False 表示不添加自循环
-            edge_index_a2a = subgraph(subset=mask_s, edge_index=edge_index_a2a)[0]         # 使用subgraph函数和掩码mask_s过滤边，只保留有效的边
-            
-            o.append(YamaiGraph(x=x_a[t], edge_index=edge_index_a2a))
-
-        return o
+        return yamai_graphs
 
 @dataclass
 class MikuScene:
@@ -846,7 +800,7 @@ class MikuScene:
         )
 
     def to_yamai(self) -> Yamai:
-        return Yamai(a2a_graphs=self.agent.to_graphs())
+        return Yamai(graphs=self.agent.to_graphs())
 
 class MikuDataset(ArgoverseV2Dataset):
     def __init__(self,
