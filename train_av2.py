@@ -22,6 +22,8 @@ from train import get_args, pprint_args, normalize_graph
 from torch.utils.data import DataLoader as EasyDataLoader
 from data_unit.data_av2 import Yamai, YamaiGraph
 from torch_geometric.data import Data as TGData
+import random
+import warnings
 
 CKPT_PATH = "runs"
 GRLC_DEVICE = 'cuda'
@@ -29,6 +31,7 @@ MAX_NUM_AGENTS = 135
 TIME_SPAN = 10
 GRLC_NUM_NODES = MAX_NUM_AGENTS * TIME_SPAN
 GRLC_NUM_FEATURES = 4 + 3 * GRLC_NUM_NODES
+NUM_COR_NEGW_UPD = 0
 
 
 def get_dataset_yamai(args, dataset_kwargs):
@@ -59,7 +62,8 @@ def zero_ratio(tensor: torch.Tensor) -> float:
 
 def get_data_yamai(graph: YamaiGraph):
     num_pad_nodes = GRLC_NUM_NODES - graph.num_nodes
-    x = F.pad(graph.x, (0, 3 * num_pad_nodes, 0, num_pad_nodes)).float().to(GRLC_DEVICE)
+    #x = F.pad(graph.x, (0, 3 * num_pad_nodes, 0, num_pad_nodes)).float().to(GRLC_DEVICE)
+    x = F.pad(graph.x, (0, 3 * num_pad_nodes, 0, 0)).float().to(GRLC_DEVICE)
     #print(f'{x.shape=}')
     train_d = TGData(x=x, edge_index=graph.edge_index)
 
@@ -112,7 +116,110 @@ def check_float(tensor, name):
         print(f"{name} inf")
 
 
+def random_non_adjacent_permutation(x, edge_index):
+    # x: (num_nodes, feature_dim) tensor, vertex features
+    # edge_index: (2, num_edges) tensor, edge list
+    # Returns: new feature tensor based on randomly selected vertices, preferring non-adjacent ones
+    
+    num_nodes = x.shape[0]
+    device = x.device
+    
+    # Create adjacency list
+    adj_list = [set() for _ in range(num_nodes)]
+    for src, dst in edge_index.t():
+        adj_list[src.item()].add(dst.item())
+        adj_list[dst.item()].add(src.item())
+    
+    # Find non-adjacent vertices for each vertex
+    non_adj_list = []
+    for i in range(num_nodes):
+        non_adj = set(range(num_nodes)) - adj_list[i] - {i}  # Exclude self and adjacent vertices
+        non_adj_list.append(list(non_adj))
+    
+    # Initialize permutation
+    permutation = [-1] * num_nodes
+    available = set(range(num_nodes))  # Available vertices to be assigned as j
+    
+    # Randomly assign vertices, preferring non-adjacent ones
+    vertices = list(range(num_nodes))
+    random.shuffle(vertices)  # Shuffle to ensure randomness
+    
+    for i in vertices:
+        non_adj = non_adj_list[i]
+        # Filter available non-adjacent vertices
+        valid_choices = [j for j in non_adj if j in available]
+        
+        if not valid_choices:
+            # No non-adjacent vertices available, warn and use any available vertex
+            warnings.warn(f"No non-adjacent vertex available for vertex {i}, selecting from remaining vertices")
+            if not available:
+                warnings.warn(f"No vertices available for vertex {i}, permutation may be incomplete")
+                continue
+            valid_choices = list(available)
+        
+        # Randomly select one vertex
+        j = random.choice(valid_choices)
+        permutation[i] = j
+        available.remove(j)
+    
+    # Check if permutation is complete
+    if -1 in permutation:
+        warnings.warn("Incomplete permutation due to insufficient available vertices")
+        # Fill remaining with -1 or handle differently if needed
+        permutation = [j if j != -1 else random.choice(list(range(num_nodes))) for j in permutation]
+    
+    # Create new feature tensor based on permutation
+    new_x = x[permutation]
+    
+    return new_x
+
+
+def random_non_adjacent_selection(x, edge_index):
+    # x: (num_nodes, feature_dim) tensor, vertex features
+    # edge_index: (2, num_edges) tensor, edge list
+    # Returns: new feature tensor based on randomly selected non-adjacent vertices
+    
+    num_nodes = x.shape[0]
+    device = x.device
+    
+    # Create adjacency list
+    adj_list = [set() for _ in range(num_nodes)]
+    for src, dst in edge_index.t():
+        adj_list[src.item()].add(dst.item())
+        adj_list[dst.item()].add(src.item())
+    
+    # Find non-adjacent vertices for each vertex
+    non_adj_list = []
+    for i in range(num_nodes):
+        non_adj = set(range(num_nodes)) - adj_list[i] - {i}  # Exclude self and adjacent vertices
+        non_adj_list.append(list(non_adj))
+    
+    # Initialize selection
+    selected = []
+    
+    # Randomly select non-adjacent vertices for each vertex
+    for i in range(num_nodes):
+        non_adj = non_adj_list[i]
+        
+        if not non_adj:
+            # No non-adjacent vertices available, warn and select any vertex
+            warnings.warn(f"No non-adjacent vertex available for vertex {i}, selecting random vertex")
+            selected.append(random.choice(range(num_nodes)))
+        else:
+            # Randomly select one non-adjacent vertex
+            j = random.choice(non_adj)
+            selected.append(j)
+    
+    # Create new feature tensor based on selected vertices
+    new_x = x[selected]
+    
+    return new_x
+
+
 def run_GCN_yamai(args, gpu_id=None, exp_id=None):
+    global NUM_COR_NEGW_UPD
+    warnings.filterwarnings('ignore')
+
     random.seed(args.seed)
     torch.cuda.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -128,8 +235,10 @@ def run_GCN_yamai(args, gpu_id=None, exp_id=None):
     logfile = open(f"{CKPT_PATH}/{exp_id}/train.log", "w", encoding="utf-8", newline="\n")
 
     useA = True  # TODO
+    #yamai = Yamai.from_batch(next(iter(train_dataloader)))  # TODO
     # TODO: nb_feature=4 or 128?
-    model = GRLC_GCN_test(GRLC_NUM_NODES, GRLC_NUM_FEATURES, args.dim,
+    #model_nodes = yamai.graphs[0].num_nodes  # GRLC_NUM_NODES
+    model = GRLC_GCN_test(500, GRLC_NUM_FEATURES, args.dim,
                           dim_x=args.dim_x, useact=args.usingact, liner=args.UsingLiner,
                           dropout=args.dropout, useA=useA)
 
@@ -138,6 +247,9 @@ def run_GCN_yamai(args, gpu_id=None, exp_id=None):
     model.to(running_device)
     my_margin = args.margin1
     my_margin_2 = my_margin + args.margin2
+
+    # MarginRankingLoss: 排序损失
+    # 损失函数的目标是确保正例的得分高于负例的得分，且两者的得分差距至少为一个给定的边界（margin）。
     margin_loss = torch.nn.MarginRankingLoss(margin=my_margin, reduce=False)
     num_neg = 10  # TODO
     #print(num_neg)
@@ -145,6 +257,7 @@ def run_GCN_yamai(args, gpu_id=None, exp_id=None):
     analyze_dataset(train_dataloader)
 
     for current_iter, epoch in enumerate(tqdm(range(args.epochs))):
+        epoch_losses = []
         # print(f"!0, {epoch=}")
         if epoch % 100 == 0:
             torch.save(model, f"{CKPT_PATH}/{exp_id}/grlc_{epoch}.pth")
@@ -153,12 +266,14 @@ def run_GCN_yamai(args, gpu_id=None, exp_id=None):
             # TODO: Multibatch
             yamai = Yamai.from_batch(data)
             # print(f"!1, {yamai}")
-            if data_idx >= 1:
-                break
+            # if data_idx >= 1:
+            #     break
+            #yamai = Yamai.from_batch(train_dataloader)
             for graph_idx, graph in enumerate(yamai.graphs):
-                if graph_idx >= 1:
-                    break
-                #print()
+                # if graph_idx >= 1:
+                #     break
+                #graph = yamai.graphs[0]
+                #tqdm.write(f'{graph.num_nodes=}')
                 train_d, adj_list, x_list = get_data_yamai(graph)
                 
                 A_I = adj_list[0]
@@ -191,18 +306,22 @@ def run_GCN_yamai(args, gpu_id=None, exp_id=None):
                 for i in range(num_neg):
                     idx_0 = np.random.permutation(nb_nodes)
                     feature_temp = feature_X[idx_0]
+                    #feature_temp = random_non_adjacent_selection(train_d.x, train_d.edge_index)
                     feature_n.append(feature_temp)
                 #print(f'{feature_n=}')
                 h_a, h_p, h_n_list, h_a_0, h_p_0, h_n_0_list = model(feature_a, feature_p, feature_n, A_I_nomal, I=I_input)
                 check_float(h_a, 'h_a')
                 check_float(h_p, 'h_p')
+                #print('h_p max', torch.max(h_p).item())
                 h_n_list_stk = torch.stack(h_n_list)
                 check_float(h_n_list_stk, 'h_n_list_stk')
+                #print('h_n_list_stk max', torch.max(h_n_list_stk).item())
                 check_float(h_a_0, 'h_a_0')
                 h_n_0_list_stk = torch.stack(h_n_0_list)
                 check_float(h_n_0_list_stk, 'h_n_0_list_stk')
                 s_p = F.pairwise_distance(h_a, h_p)
                 check_float(s_p, 's_p')
+                #print(f'{s_p=}')
                 cos_0_list = []
                 for h_n_0 in h_n_0_list:
                     cos_0 = F.pairwise_distance(h_a_0, h_n_0)
@@ -214,16 +333,21 @@ def run_GCN_yamai(args, gpu_id=None, exp_id=None):
                 cos_0_max = cos_0_stack.max(dim=0)[0]
                 #print(f'{cos_0_min=}, {cos_0_max=}')
                 gap = cos_0_max - cos_0_min  # FIXME: This contains zero.
+                #print('gap zero count', (gap == 0.0).sum().item())
                 #print(f'{gap=}')
                 weight_list = []
+                pass_corr_negw_upd = True
                 for i in range(cos_0_stack.size()[0]):
                     weight = (cos_0_stack[i] - cos_0_min) / gap
                     if torch.isnan(weight).any():
+                        pass_corr_negw_upd = False
                         # FIXME: Every weight contains NaN.
                         #print('!!!', i, cos_0_stack[i], cos_0_min, gap)
-                        weight = torch.nan_to_num(weight, nan=0.0)
+                        weight = torch.nan_to_num(weight, nan=0.0)  # TODO: 0.0 or 1.0 or ...? Why?
                         #print('@@@', torch.isnan(weight).any())
                     weight_list.append(weight)
+                if pass_corr_negw_upd is True:
+                    NUM_COR_NEGW_UPD += 1
                 weight_list_stk = torch.stack(weight_list)
                 #print(f'{weight_list_stk=}')
                 check_float(weight_list_stk, 'weight_list_stk')
@@ -234,6 +358,7 @@ def run_GCN_yamai(args, gpu_id=None, exp_id=None):
                     s_n_list.append(s_n)
                 s_n_list_stk = torch.stack(s_n_list)
                 check_float(s_n_list_stk, 's_n_list_stk')
+                #print(f'{s_n_list_stk=}')
                 margin_label = -1 * torch.ones_like(s_p)
                 loss_mar = 0
                 mask_margin_N = 0
@@ -243,14 +368,20 @@ def run_GCN_yamai(args, gpu_id=None, exp_id=None):
                     mask_margin_N += torch.max((s_n - s_p.detach() - my_margin_2), lbl_z).sum()
                     i += 1
                 mask_margin_N = mask_margin_N / num_neg
-                loss = loss_mar * args.w_loss1 + mask_margin_N * args.w_loss2 / nb_nodes
+                loss = loss_mar * args.w_loss1 + mask_margin_N * args.w_loss2 # / nb_nodes
+                epoch_losses.append((loss.item(), loss_mar.item(), mask_margin_N.item()))
                 loss.backward()
                 optimiser.step()
-        string_1 = f"Epoch {epoch}, Loss {loss.item():.3f}, Loss 1: {loss_mar.item():.3f}, Loss 2: {mask_margin_N.item():.3f}"
+        epoch_losses = torch.tensor(epoch_losses).transpose(0, 1)
+        string_1 = f"Epoch {epoch}, Loss {epoch_losses[0].mean():.3f}, Loss 1: {epoch_losses[1].mean():.3f}, Loss 2: {epoch_losses[2].mean():.3f}"
         tqdm.write(string_1)  # TODO
         logfile.write(string_1+'\n')
+        #exit()  # TODO
+
+    print(f'{NUM_COR_NEGW_UPD=}')
     torch.save(model, f"{CKPT_PATH}/{exp_id}/grlc_{args.epochs}.pth")
     logfile.close()
+
 
 if __name__ == '__main__':
     num_total_runs = 10

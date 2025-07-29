@@ -352,8 +352,7 @@ class GRLC_GCN_test(nn.Module):
         self.useA = useA
 
     def forward(self, seq_a, seq_p, seq_n, adj=None, diff=None, I=None):
-        if self.A is None:
-            self.A = adj
+        self.A = adj
         seq_p = F.dropout(seq_p, self.dropout, training=self.training)
         seq_n_list = []
         for seq_n_temp in seq_n:

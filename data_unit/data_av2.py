@@ -30,6 +30,20 @@ except ImportError:
     read_json_file = object
 
 
+FORCE_PROCESS = False
+FULL_NUM_SAMPLES = {
+    'train': 199908,
+    'val': 24988,
+    'test': 24984,
+}
+CUSTOM_NUM_SAMPLES = {
+    'train': 14,
+    'val': 19,
+    'test': 16,
+}
+NUM_SAMPLES = CUSTOM_NUM_SAMPLES
+
+
 class ArgoverseV2Dataset(Dataset):
     """Dataset class for Argoverse 2 Motion Forecasting Dataset.
 
@@ -118,11 +132,7 @@ class ArgoverseV2Dataset(Dataset):
         self.predict_unseen_agents = predict_unseen_agents
         self.vector_repr = vector_repr
         self._url = f'https://s3.amazonaws.com/argoverse/datasets/av2/tars/motion-forecasting/{split}.tar'
-        self._num_samples = {
-            'train': 199908,
-            'val': 24988,
-            'test': 24984,
-        }[split]
+        self._num_samples = NUM_SAMPLES[split]
         self._agent_types = ['vehicle', 'pedestrian', 'motorcyclist', 'cyclist', 'bus', 'static', 'background',
                              'construction', 'riderless_bicycle', 'unknown']
         self._agent_categories = ['TRACK_FRAGMENT', 'UNSCORED_TRACK', 'SCORED_TRACK', 'FOCAL_TRACK']
@@ -862,6 +872,11 @@ class MikuDataset(ArgoverseV2Dataset):
             processed_dir = os.path.join(root, split, "yamai")
         super().__init__(root, split, raw_dir, processed_dir, transform, dim,
                          num_historical_steps, num_future_steps, predict_unseen_agents, vector_repr)
+
+    def _process(self) -> None:
+        if FORCE_PROCESS:
+            self._processed_file_names = []
+        super()._process()
 
     def process(self) -> None:
         for raw_file_name in tqdm(self.raw_file_names):               # tqdm是一个进度条库，用于在控制台显示进度
