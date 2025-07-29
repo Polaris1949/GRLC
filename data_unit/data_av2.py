@@ -690,6 +690,20 @@ class Yamai:
     def dict(self) -> Dict[str, Any]:
         return asdict(self)
 
+MIKU_DIST_MIN = 1e6
+MIKU_DIST_MAX = 0.0
+MIKU_SPEED_MIN = 1e6
+MIKU_SPEED_MAX = 0.0
+
+MIKU_DIST_CLAMP_MAX = 200.0
+MIKU_SPEED_CLAMP_MAX = 20.0
+
+def clamp_number_ratio(input: torch.Tensor, max: float) -> torch.Tensor:
+    return torch.clamp_max(input, max) / max
+
+def clamp_angle_ratio(input: torch.Tensor) -> torch.Tensor:
+    return (input + math.pi) / (math.pi * 2)
+
 @dataclass
 class MikuAgent:
     valid_mask: torch.Tensor # [92, 110]
@@ -731,7 +745,6 @@ class MikuAgent:
         )
 
     def to_graphs(self) -> List[YamaiGraph]:
-        mask = self.valid_mask[:, :NUM_HISTORICAL_STEPS].contiguous()  # [A, T]
         pos_a = self.position[:, :NUM_HISTORICAL_STEPS, :INPUT_DIM].contiguous()  # [A, T, 2]
         motion_vector_a = torch.cat([pos_a.new_zeros(self.num_nodes, 1, INPUT_DIM),
                                      pos_a[:, 1:] - pos_a[:, :-1]], dim=1)  # [A, T, 2]
@@ -740,31 +753,62 @@ class MikuAgent:
 
         vel = self.velocity[:, :NUM_HISTORICAL_STEPS, :INPUT_DIM].contiguous()  # [A, T, 2]
 
-        x_a = torch.stack(  # [A, T, 4]
-            [torch.norm(motion_vector_a[:, :, :2], p=2, dim=-1),     # 表示智能体在两个连续时间步之间的移动距离
-                angle_between_2d_vectors(ctr_vector=head_vector_a, nbr_vector=motion_vector_a[:, :, :2]),   # 计算智能体的运动向量和代理朝向向量之间的夹角
-                torch.norm(vel[:, :, :2], p=2, dim=-1),        # 表示智能体在两个连续时间步之间的平均速度
-                angle_between_2d_vectors(ctr_vector=head_vector_a, nbr_vector=vel[:, :, :2])], dim=-1) # 计算智能体速度向量和代理朝向向量之间的夹角
+        global MIKU_DIST_MAX, MIKU_DIST_MIN, MIKU_SPEED_MAX, MIKU_SPEED_MIN
+        # 表示智能体在两个连续时间步之间的移动距离
+        motion_dist_a = torch.norm(motion_vector_a[:, :, :2], p=2, dim=-1)
+        motion_dist_a = clamp_number_ratio(motion_dist_a, MIKU_DIST_CLAMP_MAX)
+        MIKU_DIST_MAX = max(MIKU_DIST_MAX, torch.max(motion_dist_a).item())
+        MIKU_DIST_MIN = min(MIKU_DIST_MIN, torch.min(motion_dist_a).item())
+        # 计算智能体的运动向量和代理朝向向量之间的夹角
+        angle_head_motion_a = angle_between_2d_vectors(ctr_vector=head_vector_a, nbr_vector=motion_vector_a[:, :, :2])
+        angle_head_motion_a = clamp_angle_ratio(angle_head_motion_a)
+        # 表示智能体在两个连续时间步之间的平均速率
+        speed_a = torch.norm(vel[:, :, :2], p=2, dim=-1)
+        speed_a = clamp_number_ratio(speed_a, MIKU_SPEED_CLAMP_MAX)
+        MIKU_SPEED_MAX = max(MIKU_SPEED_MAX, torch.max(speed_a).item())
+        MIKU_SPEED_MIN = min(MIKU_SPEED_MIN, torch.min(speed_a).item())
+        # 计算智能体速度向量和代理朝向向量之间的夹角
+        angle_head_velocity_a = angle_between_2d_vectors(ctr_vector=head_vector_a, nbr_vector=vel[:, :, :2])
+        angle_head_velocity_a = clamp_angle_ratio(angle_head_velocity_a)
+
+        # 智能体特征 [A, T, 4]
+        x_a = torch.stack([motion_dist_a, angle_head_motion_a, speed_a, angle_head_velocity_a], dim=-1)
+
+        # TODO: Simple features, no relation
+        # x_a_all = x_a.reshape(-1, 4)
+        # pos_a_all = pos_a.reshape(-1, 2)
+        # edge_index_a2a = radius_graph(x=pos_a_all, r=A2A_RADIUS, loop=False, max_num_neighbors=300)
+        # return [YamaiGraph(x=x_a_all, edge_index=edge_index_a2a)]
 
         num_nodes = self.num_nodes
+        # 生成时间跨度内的所有顶点
         num_nodes_t = num_nodes * TIME_SPAN
+        # 生成完全图边集
         node_full_graph = torch.tensor([(i, j) for i in range(num_nodes_t) for j in range(num_nodes_t)]).transpose(0, 1)
         yamai_graphs: List[YamaiGraph] = []
 
         for time_beg in range(0, NUM_HISTORICAL_STEPS, TIME_SPAN):
             time_end = time_beg + TIME_SPAN
+            # 当前时间跨度内的特征 [A*Ts, 4]
             x_a_t = x_a[:, time_beg:time_end, :].reshape(num_nodes_t, 4)
             pos_a_t = pos_a[:, time_beg:time_end, :].reshape(num_nodes_t, 2)
             head_a_t = head_a[:, time_beg:time_end].reshape(num_nodes_t)
             head_vector_a_t = head_vector_a[:, time_beg:time_end, :].reshape(num_nodes_t, 2)
             rel_pos_a2a = pos_a_t[node_full_graph[0]] - pos_a_t[node_full_graph[1]]
+            # 智能体两两之间的夹角
             rel_head_a2a = wrap_angle(head_a_t[node_full_graph[0]] - head_a_t[node_full_graph[1]])
-            r_a2a = torch.stack(
-                [torch.norm(rel_pos_a2a, p=2, dim=-1),
-                angle_between_2d_vectors(ctr_vector=head_vector_a_t[node_full_graph[1]], nbr_vector=rel_pos_a2a),
-                rel_head_a2a], dim=-1).reshape(num_nodes_t, num_nodes_t * 3)
-            # node_full_graph.shape=torch.Size([2, 656100]), x_a_t.shape=torch.Size([810, 4]), r_a2a.shape=torch.Size([810, 2430])
-            # print(f'{node_full_graph.shape=}, {x_a_t.shape=}, {r_a2a.shape=}')
+            rel_head_a2a = clamp_angle_ratio(rel_head_a2a)
+            # 智能体两两之间的相对距离
+            rel_dist_a2a = torch.norm(rel_pos_a2a, p=2, dim=-1)
+            rel_dist_a2a = clamp_number_ratio(rel_dist_a2a, MIKU_DIST_CLAMP_MAX)
+            MIKU_DIST_MAX = max(MIKU_DIST_MAX, torch.max(rel_dist_a2a).item())
+            MIKU_DIST_MIN = min(MIKU_DIST_MIN, torch.min(rel_dist_a2a).item())
+            # 智能体两两之间的碰撞转角
+            rel_coll_a2a = angle_between_2d_vectors(ctr_vector=head_vector_a_t[node_full_graph[1]], nbr_vector=rel_pos_a2a)
+            rel_coll_a2a = clamp_angle_ratio(rel_coll_a2a)
+            # 智能体相关性 [A*Ts, A*Ts*3]
+            r_a2a = torch.stack([rel_dist_a2a, rel_coll_a2a, rel_head_a2a], dim=-1).reshape(num_nodes_t, num_nodes_t * 3)
+            # 输出特征 [A*Ts, 4+A*Ts*3]
             x_yamai = torch.cat([x_a_t, r_a2a], dim=1)
             edge_index_a2a = radius_graph(x=pos_a_t, r=A2A_RADIUS, loop=False, max_num_neighbors=300)
             yamai_graphs.append(YamaiGraph(x=x_yamai, edge_index=edge_index_a2a))

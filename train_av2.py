@@ -30,6 +30,7 @@ TIME_SPAN = 10
 GRLC_NUM_NODES = MAX_NUM_AGENTS * TIME_SPAN
 GRLC_NUM_FEATURES = 4 + 3 * GRLC_NUM_NODES
 
+
 def get_dataset_yamai(args, dataset_kwargs):
     train_d, val_d, test_d = get_dataset_or_loader(
         args.dataset_class, args.dataset_name, args.data_root,
@@ -38,11 +39,38 @@ def get_dataset_yamai(args, dataset_kwargs):
     )
     return train_d
 
+
+def zero_ratio(tensor: torch.Tensor) -> float:
+    """
+    计算张量中0值的数量占总数的比例
+    
+    Args:
+        tensor (torch.Tensor): 输入张量
+        
+    Returns:
+        float: 0值占比（0到1之间的浮点数）
+    """
+    total_elements = tensor.numel()  # 获取张量总元素数
+    if total_elements == 0:
+        return 0.0
+    zero_count = (tensor == 0).sum().item()  # 计算0值的数量
+    return zero_count / total_elements
+
+
 def get_data_yamai(graph: YamaiGraph):
     num_pad_nodes = GRLC_NUM_NODES - graph.num_nodes
     x = F.pad(graph.x, (0, 3 * num_pad_nodes, 0, num_pad_nodes)).float().to(GRLC_DEVICE)
     #print(f'{x.shape=}')
     train_d = TGData(x=x, edge_index=graph.edge_index)
+
+    nb_nodes = train_d.num_nodes
+    nb_feature = train_d.num_node_features
+    nb_edges = train_d.num_edges
+    # print(f'NFE: {nb_nodes}, {nb_feature}, {nb_edges}')
+    # feat_max = torch.max(train_d.x)
+    # feat_min = torch.min(train_d.x)
+    # print(f'X minmax: {feat_min}, {feat_max}')
+
     eps = 2.2204e-16
     norm = train_d.x.norm(p=1, dim=1, keepdim=True).clamp(min=0.) + eps
     train_d.x = train_d.x.div(norm.expand_as(train_d.x))
@@ -58,21 +86,30 @@ def get_data_yamai(graph: YamaiGraph):
     return train_d, [A_I, A_I_nomal, A_sp], [train_d.x]
 
 
-def check_nan(tensor, message="Tensor contains NaN values"):
-    """
-    检查张量中是否存在 NaN 值，若存在则打印消息。
-    
-    Args:
-        tensor (torch.Tensor): 输入张量
-        message (str): 发现 NaN 值时打印的消息，默认为 "Tensor contains NaN values"
-        
-    Returns:
-        bool: True 如果张量包含 NaN，False 否则
-    """
-    has_nan = torch.isnan(tensor).any()
-    if has_nan:
-        print(message)
-    return has_nan
+def analyze_dataset(train_dataloader):
+    from data_unit.data_av2 import MIKU_DIST_MAX, MIKU_DIST_MIN, MIKU_SPEED_MAX, MIKU_SPEED_MIN
+    print(f'{MIKU_DIST_MAX=}')
+    print(f'{MIKU_DIST_MIN=}')
+    print(f'{MIKU_SPEED_MAX=}')
+    print(f'{MIKU_SPEED_MIN=}')
+    ZERO_RATIO_MAX = 0.0
+    ZERO_RATIO_MIN = 1.0
+    for data_idx, data in enumerate(train_dataloader):
+        yamai = Yamai.from_batch(data)
+        for graph_idx, graph in enumerate(yamai.graphs):
+            train_d, adj_list, x_list = get_data_yamai(graph)
+            zr = zero_ratio(train_d.x)
+            ZERO_RATIO_MAX = max(ZERO_RATIO_MAX, zr)
+            ZERO_RATIO_MIN = min(ZERO_RATIO_MIN, zr)
+    print(f'{ZERO_RATIO_MAX=}')
+    print(f'{ZERO_RATIO_MIN=}')
+
+
+def check_float(tensor, name):
+    if torch.isnan(tensor).any():
+        print(f"{name} nan")
+    if torch.isinf(tensor).any():
+        print(f"{name} inf")
 
 
 def run_GCN_yamai(args, gpu_id=None, exp_id=None):
@@ -105,6 +142,7 @@ def run_GCN_yamai(args, gpu_id=None, exp_id=None):
     num_neg = 10  # TODO
     #print(num_neg)
     #print(f'{args.w_loss1=}, {args.w_loss2=}')
+    analyze_dataset(train_dataloader)
 
     for current_iter, epoch in enumerate(tqdm(range(args.epochs))):
         # print(f"!0, {epoch=}")
@@ -115,9 +153,11 @@ def run_GCN_yamai(args, gpu_id=None, exp_id=None):
             # TODO: Multibatch
             yamai = Yamai.from_batch(data)
             # print(f"!1, {yamai}")
+            if data_idx >= 1:
+                break
             for graph_idx, graph in enumerate(yamai.graphs):
-                #if graph_idx >= 2:
-                #    exit()  # TODO
+                if graph_idx >= 1:
+                    break
                 #print()
                 train_d, adj_list, x_list = get_data_yamai(graph)
                 
@@ -143,6 +183,7 @@ def run_GCN_yamai(args, gpu_id=None, exp_id=None):
                 model.train()
                 optimiser.zero_grad()
                 feature_X = x_list[0].to(running_device)
+                check_float(feature_X, 'feature_X')
                 lbl_z = torch.tensor([0.]).to(running_device)
                 feature_a = feature_X
                 feature_p = feature_X
@@ -152,18 +193,23 @@ def run_GCN_yamai(args, gpu_id=None, exp_id=None):
                     feature_temp = feature_X[idx_0]
                     feature_n.append(feature_temp)
                 #print(f'{feature_n=}')
-                h_a, h_p, h_n_lsit, h_a_0, h_p_0, h_n_0_list = model(feature_a, feature_p, feature_n, A_I_nomal, I=I_input)
-                check_nan(h_a, 'h_a nan')
-                check_nan(h_p, 'h_p nan')
+                h_a, h_p, h_n_list, h_a_0, h_p_0, h_n_0_list = model(feature_a, feature_p, feature_n, A_I_nomal, I=I_input)
+                check_float(h_a, 'h_a')
+                check_float(h_p, 'h_p')
+                h_n_list_stk = torch.stack(h_n_list)
+                check_float(h_n_list_stk, 'h_n_list_stk')
+                check_float(h_a_0, 'h_a_0')
+                h_n_0_list_stk = torch.stack(h_n_0_list)
+                check_float(h_n_0_list_stk, 'h_n_0_list_stk')
                 s_p = F.pairwise_distance(h_a, h_p)
-                check_nan(s_p, 's_p nan')
+                check_float(s_p, 's_p')
                 cos_0_list = []
                 for h_n_0 in h_n_0_list:
                     cos_0 = F.pairwise_distance(h_a_0, h_n_0)
                     cos_0_list.append(cos_0)
                 cos_0_stack = torch.stack(cos_0_list).detach()
                 #print(f'{cos_0_stack=}')
-                check_nan(cos_0_stack, 'cos_0_stack nan')
+                check_float(cos_0_stack, 'cos_0_stack')
                 cos_0_min = cos_0_stack.min(dim=0)[0]
                 cos_0_max = cos_0_stack.max(dim=0)[0]
                 #print(f'{cos_0_min=}, {cos_0_max=}')
@@ -180,12 +226,14 @@ def run_GCN_yamai(args, gpu_id=None, exp_id=None):
                     weight_list.append(weight)
                 weight_list_stk = torch.stack(weight_list)
                 #print(f'{weight_list_stk=}')
-                check_nan(weight_list_stk, 'weight_list_stk nan')
+                check_float(weight_list_stk, 'weight_list_stk')
                 s_n_list = []
-                s_n_cosin_list = []
-                for h_n in h_n_lsit:
+                #s_n_cosin_list = []
+                for h_n in h_n_list:
                     s_n = F.pairwise_distance(h_a, h_n)
                     s_n_list.append(s_n)
+                s_n_list_stk = torch.stack(s_n_list)
+                check_float(s_n_list_stk, 's_n_list_stk')
                 margin_label = -1 * torch.ones_like(s_p)
                 loss_mar = 0
                 mask_margin_N = 0

@@ -271,10 +271,10 @@ def run_GCN(args, gpu_id=None, exp_name=None, number=0, return_model=False, retu
     random.seed(args.seed)
     torch.cuda.manual_seed(args.seed)
     np.random.seed(args.seed)
-    writename = "-" + exp_name[4:] + "_" + str(number)
-    logname = os.path.join(exp_name, str(number) + "_" + str(args.seed) + ".txt")
-    logfile = open(logname, 'a')
-    writer = SummaryWriter(comment=writename)
+    #writename = "-" + exp_name[4:] + "_" + str(number)
+    #logname = os.path.join(exp_name, str(number) + "_" + str(args.seed) + ".txt")
+    #logfile = open(logname, 'a')
+    #writer = SummaryWriter(comment=writename)
     final_acc = 0
     best_acc = 0
     torch.backends.cudnn.deterministic = True
@@ -292,6 +292,10 @@ def run_GCN(args, gpu_id=None, exp_name=None, number=0, return_model=False, retu
     nb_edges = train_d.data.num_edges
     nb_nodes = train_d.data.num_nodes
     nb_feature = train_d.data.num_features
+    print(f'NFE: {nb_nodes}, {nb_feature}, {nb_edges}')
+    feat_max = torch.max(train_d.data.x)
+    feat_min = torch.min(train_d.data.x)
+    print(f'X minmax: {feat_min}, {feat_max}')
     nb_classes = int(lable.max() - lable.min()) + 1
 
     lable_matrix = (lable.view(nb_nodes, 1).repeat(1, nb_nodes) == lable.view(1, nb_nodes).repeat(nb_nodes, 1)) + 0
@@ -478,6 +482,9 @@ def run_GCN(args, gpu_id=None, exp_name=None, number=0, return_model=False, retu
         loss.backward()
         optimiser.step()
 
+        string = f"Epoch {epoch}, Loss {loss.item():.3f}, Loss 1: {loss_mar.item():.3f}, Loss 2: {mask_margin_N.item():.3f}"
+        tqdm.write(string)  # TODO
+
         model.eval()
         if args.dataset_name in ['Crocodile', 'WikiCS', 'Photo']:
             h_p_d = h_p.detach()
@@ -495,7 +502,7 @@ def run_GCN(args, gpu_id=None, exp_name=None, number=0, return_model=False, retu
             attention[I] = 0
             model.A = attention_N
 
-        if epoch % 50 == 0:
+        if False and epoch % 50 == 0:  # TODO
             model.eval()
             h_a, h_p = model.embed(feature_a, feature_p, feature_n, A_I_nomal, I=I_input)
             if args.useNewA:
@@ -548,7 +555,8 @@ def run_GCN(args, gpu_id=None, exp_name=None, number=0, return_model=False, retu
             tqdm.write(string_1 + string_2 + string_3)
             final_acc = accs.mean().item()
             best_acc = max(best_acc, final_acc)
-    return final_acc, best_acc
+    # return final_acc, best_acc
+    return 0.0, 0.0  # TODO
 
 
 def run_with_many_seeds(args, num_seeds, gpu_id=None, name=None, **kwargs):
