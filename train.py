@@ -9,7 +9,7 @@ import numpy as np
 from tqdm import tqdm
 from data_all import getattr_d, get_dataset_or_loader
 from data_unit.utils import blind_other_gpus
-from models import LogReg, GRLC_GCN_test
+from models import LogReg, GRLC
 from munkres import Munkres
 from sklearn import metrics
 from tensorboardX import SummaryWriter
@@ -306,9 +306,9 @@ def run_GCN(args, gpu_id=None, exp_name=None, number=0, return_model=False, retu
         useA = True
     else:
         useA = False
-    model = GRLC_GCN_test(nb_nodes, nb_feature, args.dim,
-                          dim_x=args.dim_x, useact=args.usingact, liner=args.UsingLiner,
-                          dropout=args.dropout, useA=useA)
+    model = GRLC(nb_feature, args.dim,
+                          hidden_mul=args.dim_x, 
+                          dropout=args.dropout, is_neg_emb_structure=useA)
 
     optimiser = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=0.0001)
 
@@ -367,8 +367,6 @@ def run_GCN(args, gpu_id=None, exp_name=None, number=0, return_model=False, retu
             model.eval()
             feature_X = x_list[0].to(running_device)
             lbl_z = torch.tensor([0.]).to(running_device)
-            feature_a = feature_X
-            feature_p = feature_X
             feature_n = []
             idx_list = []
             idx_lable = []
@@ -378,7 +376,7 @@ def run_GCN(args, gpu_id=None, exp_name=None, number=0, return_model=False, retu
                 idx_lable.append(lable[idx_0])
                 feature_temp = feature_X[idx_0]
                 feature_n.append(feature_temp)
-            h_a, h_p = model.embed(feature_a, feature_p, feature_n, A_I_nomal, I=I_input)
+            h_a, h_p = model.embed(feature_X, A_I_nomal, I_input)
             if args.useNewA:
                 embs = h_p
             else:
@@ -435,8 +433,6 @@ def run_GCN(args, gpu_id=None, exp_name=None, number=0, return_model=False, retu
         idx = np.random.permutation(nb_nodes)
         feature_X = x_list[0].to(running_device)
         lbl_z = torch.tensor([0.]).to(running_device)
-        feature_a = feature_X
-        feature_p = feature_X
         feature_n = []
         idx_list = []
         idx_lable = []
@@ -446,7 +442,7 @@ def run_GCN(args, gpu_id=None, exp_name=None, number=0, return_model=False, retu
             idx_lable.append(lable[idx_0])
             feature_temp = feature_X[idx_0]
             feature_n.append(feature_temp)
-        h_a, h_p, h_n_lsit, h_a_0, h_p_0, h_n_0_list = model(feature_a, feature_p, feature_n, A_I_nomal, I=I_input)
+        h_a, h_p, h_n_lsit, h_a_0, h_p_0, h_n_0_list = model(feature_X, feature_n, A_I_nomal, I_input)
         s_p = F.pairwise_distance(h_a, h_p)
         cos_0_list = []
         for h_n_0 in h_n_0_list:
@@ -491,7 +487,7 @@ def run_GCN(args, gpu_id=None, exp_name=None, number=0, return_model=False, retu
             S_new = cosine_dist(h_p_d, h_p_d)
             model.A = normalize_graph(torch.mul(S_new, A_I_nomal_dense)).to_sparse()
         elif args.dataset_name in ['Cora', 'CiteSeer']:
-            h_a, h_p = model.embed(feature_a, feature_p, feature_n, A_I_nomal, I=I_input)
+            h_a, h_p = model.embed(feature_X, A_I_nomal, I_input)
             s_a = cosine_dist(h_a, h_a).detach()
             S = (torch.stack(s_n_cosin_list).mean(dim=0).expand_as(A_I) - s_a).detach()
             # zero_vec = -9e15 * torch.ones_like(S)
@@ -502,9 +498,9 @@ def run_GCN(args, gpu_id=None, exp_name=None, number=0, return_model=False, retu
             attention[I] = 0
             model.A = attention_N
 
-        if False and epoch % 50 == 0:  # TODO
+        if epoch % 50 == 0:  # TODO
             model.eval()
-            h_a, h_p = model.embed(feature_a, feature_p, feature_n, A_I_nomal, I=I_input)
+            h_a, h_p = model.embed(feature_X, A_I_nomal, I_input)
             if args.useNewA:
                 embs = h_p  # torch.cat((h_a,h_p),dim=1)
             else:

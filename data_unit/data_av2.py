@@ -570,7 +570,7 @@ class TargetBuilder(BaseTransform):
 
 from typing import Callable, Optional
 
-import lightning as pl
+import pytorch_lightning as pl
 from torch_geometric.loader import DataLoader
 
 
@@ -646,10 +646,8 @@ class ArgoverseV2DataModule(pl.LightningDataModule):
 # Below is dataset generation middleware, Miku.
 import math
 from dataclasses import dataclass, asdict
-import torch.nn as nn
 from torch_cluster import radius_graph
 from torch_geometric.data import Data
-from torch_geometric.utils import subgraph
 from utils import angle_between_2d_vectors
 
 NUM_MAX_AGENTS = 135
@@ -668,7 +666,7 @@ class YamaiGraph:
 
     @classmethod
     def from_data(cls, data: Data) -> "YamaiGraph":
-        return cls(x=data.x, edge_index=data.edge_index)
+        return cls(x=data.x, edge_index=data.edge_index) # type: ignore
 
     @classmethod
     def from_batch(cls, data: Dict[str, Any]) -> "YamaiGraph":
@@ -936,12 +934,12 @@ class MikuDataModule(pl.LightningDataModule):
         self.val_transform = val_transform
         self.test_transform = test_transform
 
-    def prepare_data(self) -> None:               # 一次性的数据准备操作：确保数据集已经被加载和处理
+    def prepare_data(self) -> None:
         MikuDataset(self.root, 'train', self.train_raw_dir, self.train_processed_dir, self.train_transform)
         MikuDataset(self.root, 'val', self.val_raw_dir, self.val_processed_dir, self.val_transform)
         MikuDataset(self.root, 'test', self.test_raw_dir, self.test_processed_dir, self.test_transform)
 
-    def setup(self, stage: Optional[str] = None) -> None:      # 为训练、验证和测试阶段准备数据：确保最新的数据集
+    def setup(self, stage: Optional[str] = None) -> None:
         self.train_dataset = MikuDataset(self.root, 'train', self.train_raw_dir, self.train_processed_dir,
                                                 self.train_transform)
         self.val_dataset = MikuDataset(self.root, 'val', self.val_raw_dir, self.val_processed_dir,
@@ -968,38 +966,49 @@ class MikuDataModule(pl.LightningDataModule):
 # Below is the REAL generated dataset, Yamai.
 from torch.utils.data import Dataset as EasyDataset, DataLoader as EasyDataLoader
 
-class YamaiDataset(EasyDataset[Yamai]):
-    def __init__(self, root: str, split: str, yamai_dir: str = "yamai") -> None:
+class YamaiDataset(EasyDataset[Dict[str, Any]]):
+    def __init__(
+        self,
+        root: str,
+        split: str,
+        yamai_dir: str = "yamai",
+        scene_num_graphs: int = 5,
+    ) -> None:
+        super().__init__()
         self.paths = [ent.path for ent in os.scandir(os.path.join(root, split, yamai_dir))]
+        self.scene_num_graphs = scene_num_graphs
 
-    def __getitem__(self, idx: int) -> Yamai:
-        with open(self.paths[idx], 'rb') as handle:
-            return pickle.load(handle)
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        file_id, graph_id = divmod(idx, self.scene_num_graphs)
+        with open(self.paths[file_id], 'rb') as fp:
+            return pickle.load(fp)['graphs'][graph_id]
 
     def __len__(self) -> int:
-        return len(self.paths)
+        return len(self.paths) * self.scene_num_graphs
 
 class YamaiDataModule(pl.LightningDataModule):
-    def __init__(self,
-                 root: str,
-                 train_batch_size: int,
-                 val_batch_size: int,
-                 test_batch_size: int,
-                 shuffle: bool = True,
-                 num_workers: int = 0,
-                 pin_memory: bool = True,
-                 persistent_workers: bool = True,
-                 train_raw_dir: Optional[str] = None,
-                 val_raw_dir: Optional[str] = None,
-                 test_raw_dir: Optional[str] = None,
-                 train_processed_dir: Optional[str] = None,
-                 val_processed_dir: Optional[str] = None,
-                 test_processed_dir: Optional[str] = None,
-                 train_transform: Optional[Callable] = None,
-                 val_transform: Optional[Callable] = None,
-                 test_transform: Optional[Callable] = None,
-                 **kwargs) -> None:
-        super(YamaiDataModule, self).__init__()
+    def __init__(
+        self,
+        root: str,
+        train_batch_size: int,
+        val_batch_size: int,
+        test_batch_size: int,
+        shuffle: bool = True,
+        num_workers: int = 0,
+        pin_memory: bool = True,
+        persistent_workers: bool = True,
+        train_raw_dir: Optional[str] = None,
+        val_raw_dir: Optional[str] = None,
+        test_raw_dir: Optional[str] = None,
+        train_processed_dir: Optional[str] = None,
+        val_processed_dir: Optional[str] = None,
+        test_processed_dir: Optional[str] = None,
+        train_transform: Optional[Callable] = None,
+        val_transform: Optional[Callable] = None,
+        test_transform: Optional[Callable] = None,
+        **kwargs,
+    ) -> None:
+        super().__init__()
         self.root = root
         self.train_batch_size = train_batch_size
         self.val_batch_size = val_batch_size
@@ -1018,27 +1027,40 @@ class YamaiDataModule(pl.LightningDataModule):
         self.val_transform = val_transform
         self.test_transform = test_transform
 
-    def prepare_data(self) -> None:               # 一次性的数据准备操作：确保数据集已经被加载和处理
-        YamaiDataset(self.root, 'train')
-        YamaiDataset(self.root, 'val')
-        YamaiDataset(self.root, 'test')
+    def prepare_data(self) -> None:
+        MikuDataModule(self.root, 1, 1, 1).prepare_data()
 
-    def setup(self, stage: Optional[str] = None) -> None:      # 为训练、验证和测试阶段准备数据：确保最新的数据集
+    def setup(self, stage: Optional[str] = None) -> None:
         self.train_dataset = YamaiDataset(self.root, 'train')
         self.val_dataset = YamaiDataset(self.root, 'val')
         self.test_dataset = YamaiDataset(self.root, 'test')
 
     def train_dataloader(self):
-        return EasyDataLoader(self.train_dataset, batch_size=self.train_batch_size, shuffle=self.shuffle,
-                          num_workers=self.num_workers, pin_memory=self.pin_memory,
-                          persistent_workers=self.persistent_workers)
+        return EasyDataLoader(
+            self.train_dataset,
+            batch_size=self.train_batch_size,
+            shuffle=self.shuffle,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            persistent_workers=self.persistent_workers,
+        )
 
     def val_dataloader(self):
-        return EasyDataLoader(self.val_dataset, batch_size=self.val_batch_size, shuffle=False,
-                          num_workers=self.num_workers, pin_memory=self.pin_memory,
-                          persistent_workers=self.persistent_workers)
+        return EasyDataLoader(
+            self.val_dataset,
+            batch_size=self.val_batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            persistent_workers=self.persistent_workers,
+        )
 
     def test_dataloader(self):
-        return EasyDataLoader(self.test_dataset, batch_size=self.test_batch_size, shuffle=False,
-                          num_workers=self.num_workers, pin_memory=self.pin_memory,
-                          persistent_workers=self.persistent_workers)
+        return EasyDataLoader(
+            self.test_dataset,
+            batch_size=self.test_batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            persistent_workers=self.persistent_workers,
+        )

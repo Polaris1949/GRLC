@@ -1,5 +1,6 @@
 # Custom
 data_av2/
+lightning_logs/
 log/
 runs/
 

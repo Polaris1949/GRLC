@@ -1,2 +1,2 @@
-from .GRLC import GRLC_GCN_test
+from .grlc_ import GRLC
 from .logreg import LogReg
